@@ -1,0 +1,24 @@
+<?xml version="1.0" ?>
+
+<container xmlns="http://symfony.com/schema/dic/services"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://symfony.com/schema/dic/services http://symfony.com/schema/dic/services/services-1.0.xsd">
+
+    <parameters>
+        <parameter key="env(INFINITE_HIPPO_HUNGRINESS_THRESHOLD)" type="string">500</parameter>
+        <parameter key="env(INFINITE_HIPPO_SLACK_URL)">null</parameter>
+        <parameter key="env(INFINITE_HIPPO_SLACKS_PER_HOUR)" type="string">10</parameter>
+    </parameters>
+
+    <services>
+        <service id="Infinite\HippoBundle\EventListener\PerformanceListener">
+            <argument>%kernel.cache_dir%</argument>
+            <argument>%kernel.logs_dir%</argument>
+            <argument>%env(float:INFINITE_HIPPO_HUNGRINESS_THRESHOLD)%</argument>
+            <argument>%env(INFINITE_HIPPO_SLACK_URL)%</argument>
+            <argument>%env(int:INFINITE_HIPPO_SLACKS_PER_HOUR)%</argument>
+            <tag name="kernel.event_subscriber" />
+        </service>
+    </services>
+
+</container>
