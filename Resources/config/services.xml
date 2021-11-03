@@ -5,18 +5,22 @@
     xsi:schemaLocation="http://symfony.com/schema/dic/services http://symfony.com/schema/dic/services/services-1.0.xsd">
 
     <parameters>
+        <parameter key="env(INFINITE_HIPPO_ERROR_NOTIFY_ROLES)" type="string">[]</parameter>
         <parameter key="env(INFINITE_HIPPO_HUNGRINESS_THRESHOLD)" type="string">500</parameter>
         <parameter key="env(INFINITE_HIPPO_SLACK_URL)">null</parameter>
         <parameter key="env(INFINITE_HIPPO_SLACKS_PER_HOUR)" type="string">10</parameter>
     </parameters>
 
     <services>
-        <service id="Infinite\HippoBundle\EventListener\PerformanceListener">
+        <service id="Infinite\HippoBundle\EventListener\HippoListener">
             <argument>%kernel.cache_dir%</argument>
+            <argument>%env(json:INFINITE_HIPPO_ERROR_NOTIFY_ROLES)%</argument>
             <argument>%kernel.logs_dir%</argument>
             <argument>%env(float:INFINITE_HIPPO_HUNGRINESS_THRESHOLD)%</argument>
+            <argument>%kernel.project_dir%</argument>
             <argument>%env(INFINITE_HIPPO_SLACK_URL)%</argument>
             <argument>%env(int:INFINITE_HIPPO_SLACKS_PER_HOUR)%</argument>
+            <argument type="service" id="security.token_storage" />
             <tag name="kernel.event_subscriber" />
         </service>
     </services>

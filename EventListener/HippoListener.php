@@ -12,31 +12,75 @@
 namespace Infinite\HippoBundle\EventListener;
 
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpKernel\Event\ExceptionEvent;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
 use Symfony\Component\HttpKernel\Event\ResponseEvent;
 use Symfony\Component\HttpKernel\Event\TerminateEvent;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorageInterface;
 
-class PerformanceListener implements EventSubscriberInterface
+class HippoListener implements EventSubscriberInterface
 {
     private $cacheDir;
+    private $errorRoles;
     private $logsDir;
     private $performanceLoggingThreshold;
+    private $projectDir;
     private $slackWebhookUrl;
     private $slackRateLimit;
+    private $tokenStorage;
 
     public function __construct(
         string $cacheDir,
+        array $errorRoles,
         string $logsDir,
         ?float $performanceLoggingThreshold,
+        string $projectDir,
         ?string $slackWebhookUrl,
-        ?int $slackRateLimit
+        ?int $slackRateLimit,
+        TokenStorageInterface $tokenStorage
     )
     {
         $this->cacheDir = $cacheDir;
+        $this->errorRoles = $errorRoles;
         $this->logsDir = $logsDir;
         $this->performanceLoggingThreshold = $performanceLoggingThreshold;
+        $this->projectDir = $projectDir;
         $this->slackWebhookUrl = $slackWebhookUrl;
         $this->slackRateLimit = $slackRateLimit;
+        $this->tokenStorage = $tokenStorage;
+    }
+
+    public function onException(ExceptionEvent $event)
+    {
+        if ($event->getThrowable() instanceof HttpException) {
+            return;
+        }
+
+        try {
+            if (!($token = $this->tokenStorage->getToken())) {
+                return;
+            }
+
+            if (method_exists($token, 'getRoleNames')) {
+                $currentUserRoles = $token->getRoleNames();
+            } else {
+                $currentUserRoles = array_map(function ($role) { return $role->getRole(); }, $token->getRoles());
+            }
+
+            if (method_exists($token, 'getUserIdentifier')) {
+                $username = $token->getUserIdentifier();
+            } else {
+                $username = $token->getUsername();
+            }
+
+            if (array_intersect($currentUserRoles, $this->errorRoles)) {
+                $this->logToSlack($this->formatErrorSlackMessage($event->getThrowable(), $username, $event->getRequest()));
+            }
+        } catch (\Throwable $t) {
+            // We're in an exception listener, so don't leak any new exceptions.
+        }
     }
 
     public function onRequest(RequestEvent $event)
@@ -62,7 +106,7 @@ class PerformanceListener implements EventSubscriberInterface
 
         if ($this->performanceLoggingThreshold === null || $hungriness >= $this->performanceLoggingThreshold) {
             $this->logToFile($vars);
-            $this->logToSlack($vars);
+            $this->logToSlack($this->formatHungrySlackMessage($vars));
         }
     }
 
@@ -93,7 +137,7 @@ class PerformanceListener implements EventSubscriberInterface
         fclose($fh);
     }
 
-    private function logToSlack($vars): void
+    private function logToSlack($slackMessage): void
     {
         if (!$this->slackWebhookUrl) {
             return;
@@ -161,7 +205,116 @@ class PerformanceListener implements EventSubscriberInterface
 
         // Everything is in order. Notify Slack.
         $ch = curl_init($this->slackWebhookUrl);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($slackMessage));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+        curl_exec($ch);
+        if (curl_getinfo($ch, CURLINFO_RESPONSE_CODE) < 200 || curl_getinfo($ch, CURLINFO_RESPONSE_CODE) > 299) {
+            throw new \RuntimeException('Slack webhook failed');
+        }
+    }
+
+    private function formatErrorSlackMessage(\Throwable $error, string $username, Request $request)
+    {
+        $trimDocRoot = function ($string) {
+            if (substr($string, 0, strlen($this->projectDir)) === $this->projectDir) {
+                $string = ltrim(substr($string, strlen($this->projectDir)), '/');
+            }
+            return $string;
+        };
+
+        $cause = null;
+
+        foreach ($error->getTrace() as $frame) {
+            if (false === strpos($frame['file'], '/vendor/')) {
+                $cause = $trimDocRoot($frame['file']) . ':' . $frame['line'];
+            }
+        }
+
+        return [
+            'text' => 'Production error detected',
+            'blocks' => [
+                [
+                    'type' => 'section',
+                    'fields' => [
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*ERROR*',
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*USER*',
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => '500',
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => $username,
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*METHOD*',
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*URL*',
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => $request->getMethod(),
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => $request->getUri(),
+                        ],
+                    ],
+                ],
+                [
+                    'type' => 'section',
+                    'fields' => [
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*ERROR*',
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*LOCATION*',
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => $error->getMessage(),
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => $trimDocRoot($error->getFile()) . ':' . $error->getLine(),
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*CODE*',
+                        ],
+                        [
+                            'type' => 'mrkdwn',
+                            'text' => '*CAUSE*',
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => (string)$error->getCode(),
+                        ],
+                        [
+                            'type' => 'plain_text',
+                            'text' => $cause ?? '(no additional information)',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    private function formatHungrySlackMessage($vars): array
+    {
+        return [
             'text' => 'Hungry request detected',
             'blocks' => [
                 [
@@ -202,18 +355,13 @@ class PerformanceListener implements EventSubscriberInterface
                     ],
                 ],
             ],
-        ]));
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-        curl_exec($ch);
-        if (curl_getinfo($ch, CURLINFO_RESPONSE_CODE) < 200 || curl_getinfo($ch, CURLINFO_RESPONSE_CODE) > 299) {
-            throw new \RuntimeException('Slack webhook failed');
-        }
+        ];
     }
 
     public static function getSubscribedEvents(): array
     {
         return [
+            ExceptionEvent::class => 'onException',
             RequestEvent::class => ['onRequest', 99999],
             ResponseEvent::class => ['onResponse', -99999],
             TerminateEvent::class => 'onTerminate',
