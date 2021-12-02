@@ -59,6 +59,8 @@ class HippoListener implements EventSubscriberInterface
         }
 
         try {
+            $event->getRequest()->attributes->set('_infinite_hippo_exception', $event->getThrowable());
+
             if (!($token = $this->tokenStorage->getToken())) {
                 return;
             }
@@ -76,7 +78,7 @@ class HippoListener implements EventSubscriberInterface
             }
 
             if (array_intersect($currentUserRoles, $this->errorRoles)) {
-                $this->logToSlack($this->formatErrorSlackMessage($event->getThrowable(), $username, $event->getRequest()));
+                $this->enqueueSlackMessage($this->formatErrorSlackMessage($event->getThrowable(), $username, $event->getRequest()), $event->getRequest());
             }
         } catch (\Throwable $t) {
             // We're in an exception listener, so don't leak any new exceptions.
@@ -106,7 +108,7 @@ class HippoListener implements EventSubscriberInterface
 
         if ($this->performanceLoggingThreshold === null || $hungriness >= $this->performanceLoggingThreshold) {
             $this->logToFile($vars);
-            $this->logToSlack($this->formatHungrySlackMessage($vars));
+            $this->enqueueSlackMessage($this->formatHungrySlackMessage($vars), $event->getRequest());
         }
     }
 
@@ -117,6 +119,17 @@ class HippoListener implements EventSubscriberInterface
         if (file_exists($this->logsDir . '/' . $oldLogFilename)) {
             @unlink($this->logsDir . '/' . $oldLogFilename);
         }
+
+        foreach ($event->getRequest()->attributes->get('_infinite_hippo_slack_queue', []) as $message) {
+            $this->logToSlack($message);
+        }
+    }
+
+    private function enqueueSlackMessage($message, Request $request)
+    {
+        $queue = $request->attributes->get('_infinite_hippo_slack_queue', []);
+        $queue[] = $message;
+        $request->attributes->set('_infinite_hippo_slack_queue', $queue);
     }
 
     private function logToFile($vars): void
