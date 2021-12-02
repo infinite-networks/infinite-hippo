@@ -228,6 +228,7 @@ class HippoListener implements EventSubscriberInterface
         foreach ($error->getTrace() as $frame) {
             if (false === strpos($frame['file'], '/vendor/')) {
                 $cause = $trimDocRoot($frame['file']) . ':' . $frame['line'];
+                break;
             }
         }
 
