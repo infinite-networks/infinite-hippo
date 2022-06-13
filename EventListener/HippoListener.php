@@ -239,7 +239,7 @@ class HippoListener implements EventSubscriberInterface
         $cause = null;
 
         foreach ($error->getTrace() as $frame) {
-            if (false === strpos($frame['file'], '/vendor/')) {
+            if (false === strpos($frame['file'], '/vendor/') && false === strpos($frame['file'], '/var/cache/')) {
                 $cause = $trimDocRoot($frame['file']) . ':' . $frame['line'];
                 break;
             }
